@@ -1,0 +1,387 @@
+---
+title: "Geomorphometric analysis of wildfire occurrence in a humid tropical protected area: a case study in Southern Pacific Costa Rica"
+authors: 
+  - name: "Shu Wei Chou-Chen"
+    affiliations:
+      - ref: stat
+    corresponding: true
+    email: shuwei.chou@ucr.ac.cr
+  - name: "Adolfo Quesada-Román"
+    affiliations:
+      - ref: geo
+  - name: "Daniela Vargas-Sanabria"
+    affiliations:
+      - ref: uned
+affiliations:
+  - id: stat
+    name: Escuela de Estadística, Universidad de Costa Rica
+  - id: geo
+    name: Physical Geography Lab, School of Geography, University of Costa Rica
+  - id: uned
+    name: Laboratorio de Investigacion e Innovación Tecnológica. Universidad Estatal a Distancia, Costa Rica.
+
+filters:
+  - authors-block
+
+format:
+  docx: default
+#   reference-doc: custom-reference-docPEN.docx
+# lang: es
+editor: visual
+number-sections: true
+execute:
+  echo: false
+  warning: false
+bibliography: referencias.bib
+bibliographystyle: apa
+
+nocite: |
+  @*
+
+abstract: "This study investigates the spatial distribution and environmental drivers of wildfire occurrence in a humid tropical protected area in Southern Pacific Costa Rica using geomorphometric analysis. We applied multiple statistical models, including Poisson, Negative Binomial, Zero-Inflated Poisson (ZIP), and Zero-Inflated Negative Binomial (ZINB), to evaluate their performance in fitting wildfire data. Model diagnostics, including Akaike Information Criterion (AIC), Bayesian Information Criterion (BIC), and Validated Global Deviance (VGD), indicated that the ZIP_red_final model provided the best fit. Covariates such as land surface temperature (LST), slope, topographic wetness index (TWI), and land use (savanna areas) were significant predictors of wildfire counts, while vegetation exposure (WE) showed limited significance. Spatial predictions revealed higher wildfire probabilities in specific areas, enabling the identification of regions with more than 50% likelihood of wildfire occurrence. These findings enhance understanding of wildfire dynamics in tropical ecosystems and offer insights for targeted wildfire prevention and management strategies in protected areas."
+
+keywords: wildfire
+---
+
+```{r}
+pacman::p_load("dplyr","tibble","flextable","ggplot2","gamlss","sf","gridExtra")
+
+TEMA<-theme(
+  axis.title.x = element_text(color=1, size=8),# face="bold"),
+  axis.title.y = element_text(color=1, size=8),# face="bold"),
+  axis.text.x = element_text(color=1, size=8),#,margin = margin(l = 500)),
+  axis.text.y = element_text(color=1, size=8),
+  plot.title = element_text(size=18),
+  legend.key.height = unit(1, 'cm'), #change legend key height
+  legend.key.width = unit(0.2, 'cm'),
+  legend.title = element_text(size=18)
+) + theme_bw() +
+  theme(legend.position = "bottom")
+
+```
+
+```{r}
+datos_st <-st_read('../datos/datos_301223.shp', quiet=TRUE) 
+sabana_st <-st_read('../datos/Area_sabana_2013.shp', quiet=TRUE) 
+
+sabana_st <- st_transform(sabana_st, crs = st_crs(datos_st))
+
+
+points_within <- st_within(datos_st, sabana_st)
+is_within <- lengths(points_within) > 0
+
+datos_st <- datos_st %>% mutate(sabana=is_within)
+
+datos_st <- datos_st %>% mutate(INC_d = case_when(INC>0~1,
+                                                  .default = INC),
+                                INC_d = as.factor(INC_d),
+                                id = 1:n(),
+                                logFA= log(FA+0.1),
+                                logLSF= log(LSF+0.1),
+                                logTRI= log(TRI+0.1),
+                                logINC = log(INC+1))
+
+# Lo ideal es quitar el área que queda fuera de la región?
+datos_st <- datos_st %>% filter(SLOPE != 0)
+
+
+datos_df <- datos_st %>% as.data.frame() %>% 
+  dplyr::select(id,INC,DAH,logFA,LST,logLSF,SLOPE,logTRI,TWI,WE,WExpo,sabana)
+
+datos_df <- datos_df %>%
+  mutate_at(c(3:11), ~scale(.))
+
+# Split data into training and testing data (0.5 and 0.5).
+set.seed(4646)
+rand2<-sample(2, nrow(datos_df), replace=TRUE, prob=c(0.7,0.3))
+
+datos_training <- datos_df[rand2==1,] # training data
+datos_validation <- datos_df[rand2==2,]
+```
+
+# Introduction
+
+...
+
+# Methods {#sec-metod}
+
+## Data
+
+Data description...
+
+The explanatory variables, FA and TRI, are logarithmically transformed as $(log(x+0.1))$ to address their asymmetry and to avoid undefined values for $log(0)$. Subsequently, all covariates (DAH, logFA, LST, logLSF, SLOPE, logTRI, TWI, WE, and WExpo) are scaled using z-scores to enable the comparison of their standardized contributions.
+
+## Statistical model
+
+The goal is to model a count variable (INC), which ranges from 0 to 6 and has a high percentage of zeros ($74.8\%$). Therefore, we considered count models, such as Poisson and Negative Binomial regression, as well as the zero-inflated count regression models. There are different ways in R [@R2023] that implement zero-inflated count models throughout different packages [@Zeileis2008]. We performed all the statistical modeling by using a flexible statistical framework called Generalized Additive Models for Location, Scale, and Shape (GAMLSS), since all these models are special cases within this model class. All the statistical analysis in this paper was conducted using the `gamlss` package [@rigby2005_gamlss]. Although this model allows for non-linear effects from the covariates, we retain the model with linear covariates for simplicity.
+
+Let $Y_i$ be the INC of location $i=1,...,n$. The count regression models described above are represented by either one-, two-, or three-parameter GAMLSS models:
+
+$$
+\begin{align}
+Y_i &\overset{ind}{\sim} \mathcal{D}(\mu,\sigma,\nu),\\
+g_1(\mu)&= \beta_{10}+\sum_{j=1}^{J} \beta_{1j} X_{ij},\\
+g_2(\sigma)&= \beta_{20}+\sum_{j=1}^{J} \beta_{2j} X_{ij},\\
+g_3(\nu)&= \beta_{30}+\sum_{j=1}^{J} \beta_{3j} X_{ij},
+\end{align}
+$$ {#eq-gamlss}
+
+where the response variable $Y_i$ (INC) is distributed as a two-parameter or three-parameter distribution $\mathcal{D}$: the location or mean ($\mu$), the scale ($\sigma$), and a parameter related to the skewness of the distribution ($\nu$), as well as the link functions ($g_k$ for $k=1,2,3$) for each parameter, and $\beta_{kj}$ are the regression coefficients of the $j-th$ covariate $X_ij, j=0,...,J$, measured at location $i$, for each parameter function $k=1,2,3$.
+
+Regarding to the specification of $\mathcal{D}$, the Poisson regression model (PO) includes only one parameter $\mu$ with link function $g_1(\cdot)=log(\cdot)$. Then, Negative Binomial model (NB) fits two parameters $\mu$ and $\sigma$, with link functions $g_1(\cdot)=log(\cdot)$ and $g_2(\cdot)=log(\cdot)$.
+
+For the zero-inflated models, a finite mixture distribution of a point mass at zero and a count distribution $f_Z(\cdot)$ is specified as follows:
+
+$$
+f_Y(y) =\left\{
+\begin{array}{ll}
+p_0(y) \quad ~~~~~~~~~~~~~~~~~\text{if}~ y=0, \\
+\left[1-p_0(y)\right]f_Z(y)  ~~~\text{,if}~ y=1,2,3,...,
+\end{array}
+\right.
+$$ where $p_0(y)$ represents the probability of observing $Y = 0$, and $f_Z(y)$ is the probability function of a count distribution (either Poisson or Negative Binomial). In this way, zero-inflated models add an additional parameter to the GAMLSS framework."
+
+That is, the Poisson Zero-Inflated model (ZIP) includes two parameters, with $g_1(\cdot) = \log(\cdot)$ and $g_2(\cdot) = \text{logit}(\cdot)$. Finally, the Zero-Inflated Negative Binomial model (ZINB) fits three parameters, with $g_1(\cdot) = \log(\cdot)$, $g_2(\cdot) = \text{logit}(\cdot)$, and $g_3(\cdot) = \text{logit}(\cdot)$. Note that the second parameter of ZIP and the third parameter of ZINB model the probability that a given location has zero wildfires, similar to a logistic regression.
+
+Additionally, due to the large number of data points (60,484 locations), we conducted the analysis using a training-testing approach [@rigby2005_gamlss]. In other words, we divided the data into two subsets: a training set comprising $70\%$ (42,213 locations), used for model development and selection, and a testing set comprising $30\%$ (18,271 locations), utilized for out-of-sample validation.
+
+The analysis strategy and the selection of the final model are as follows. First, we considered the models' mean $\mu$: PO, NB, ZIP, and ZINB, with full specifications of the location function, while holding other parameters constant. Next, by applying the stepwise algorithm in both directions, we obtained reduced models (PO-red, NB-red, ZIP-red, and ZINB-red). Since the zero-inflated models yielded better results, in the third step, we applied the stepwise algorithm again to add $\sigma$ to ZIP-red and both $\sigma$ and $\nu$ to ZINB-red, resulting in the final models, ZIP-red-final and ZINB-red-final."
+
+Finally, the best model is selected based on several metrics and an assessment of model adequacy. The Akaike Information Criterion (AIC) and Bayesian Information Criterion (BIC), along with generalized pseudo-$R^2$ (Cox-Snell and Cragg-Uhler), are computed for the training set, while the validation global deviance (VGD) is calculated for the testing set (out-of-sample validation).
+
+# Results {#sec-result}
+
+## Descriptive analysis
+
+Creo que vale la pena incluir una serie de análisis descriptivos.
+
+## Statistical model
+
+```{r}
+load("./output/models_final.RData")
+
+
+model.list <- list(modPO,         #step 1
+                   modNBII,
+                   modZIP,
+                   modZINBI,
+                   modPO_red,     #step 2
+                   modNBII_red,
+                   modZIP_red,
+                   modZINBI_red,
+                   modZIPfinal,   #step 3
+                   modZINBIfinal)
+
+GAIC.l <- cbind(sapply(model.list,GAIC,k=2))
+BIC.l <- cbind(sapply(model.list,GAIC,k=log(nrow(datos_training))))
+VGD.l <- cbind(sapply(model.list,VGD))
+R2adj <- cbind(sapply(model.list,Rsq,type="both"))
+
+CoxSnell <- round(as.numeric(R2adj[1,]),4)
+CraggUhler <- round(as.numeric(R2adj[2,]),4)
+
+
+IC_table <- cbind(GAIC.l,BIC.l,VGD.l,CoxSnell, CraggUhler)
+
+colnames(IC_table) <- c("AIC","BIC","VGD",'R2-CoxSnell', 'R2-Cragg Uhler')
+rownames(IC_table) <- c('PO',         #step 1
+                        'NBII',
+                        'ZIP',
+                        'ZINBI',
+                        'PO_red',     #step 2
+                        'NBII_red',
+                        'ZIP_red',
+                        'ZINBI_red',
+                        'ZIP_red_final',   #step 3
+                        'ZINBI_red_final')
+```
+
+@tbl-ICmodels presents the goodness-of-fit measures for all fitted models. AIC and BIC evaluate the goodness of fit for the training set, while VGD assesses the performance of the fitted models in predicting the out-of-sample data (validation data). All three criteria indicate that the best models are ZIP_red_final and ZINB_red_final. However, the estimation of the ZINB_red_final model is difficult to converge, and diagnostics suggest that this model is not appropriate. Conversely, the generalized pseudo-$R^2$ (Cox-Snell and Cragg-Uhler) indicates that PO_red yields the highest values among all models, but the assumptions of this model are not satisfied.
+
+```{r}
+#| label: tbl-ICmodels
+#| tbl-cap: "Goodness of fit measures for the fitted models."
+
+IC_table %>% as.data.frame() %>% 
+  rownames_to_column("Model") %>% flextable() %>% 
+theme_booktabs() 
+```
+
+The model quality of the ZIP_red_final model is assessed using normalized quantile (NQ) residual plots (@fig-ZIPdiagnostics) and the worm plot (@fig-ZIPworm), which is a detrended form of quantile residuals, similar to a Q-Q plot. Overall, this demonstrates the best performance, except for the quantile residuals against the fitted values, which show slight asymmetry across different fitted values.
+
+```{r}
+#| fig-cap: "Normalized quantile residuals analysis plots of the final fitted model (ZIP_red_final)."
+#| label: fig-ZIPdiagnostics
+#| fig-width: 9
+#| fig-height: 9
+
+load("./output/models_all.RData")
+res <- residuals(modZIPfinal, what = "z-scores", type = c("simple"))
+yfit <- fitted(modZIPfinal)
+datos_training1 <- datos_training %>% mutate(res=res,
+                                            yfit=yfit,
+                                            index=1:nrow(datos_training))
+
+fig_res1 <- ggplot(datos_training1) + geom_point(
+  aes(x=yfit,y=res)) + TEMA +labs(title="(NQ) residual v.s. fitted values",
+        x ="fitted values", y = "normalized quantile residuals")
+
+fig_res2 <- ggplot(datos_training1) + geom_point(
+  aes(x=index,y=res)) + TEMA +labs(title="index plot",
+        x ="index", y = "normalized quantile residuals")
+
+fig_res3 <- ggplot(data = datos_training1, aes(x = res, after_stat(density)))+
+  geom_histogram(alpha = 0.50)+
+  geom_density(alpha = 0.50)+ TEMA +labs(title="histogram and density",
+        x ="normalized quantile residuals", y = "density")
+
+fig_res4 <- ggplot(datos_training1, aes(sample = res)) + stat_qq() + stat_qq_line() + TEMA +
+  labs(title="Q-Q plot",
+        x ="sample quantiles", y = "theoretical quantiles")
+
+gridExtra::grid.arrange(fig_res1,fig_res2,fig_res3,fig_res4,ncol=2)
+```
+
+```{r}
+#| fig-cap: "Worm Plot"
+#| label: fig-ZIPworm
+#| fig-width: 6
+#| fig-height: 6
+
+wp(modZIPfinal,ylim.all = 1.5, xlim.all = 5)
+```
+
+After checking the model adequacy, @tbl-ZIPmodels describes the model estimates. The equation for $\mu$ (Mu) fits the wildfire counts, while the equation for $\sigma$ (Sigma) models the probability of observing zero wildfires in a given location We observe that all these variables are statistically significant, except for logTRI and WE in the $\mu$ (Mu) equation. DAH, LST, SLOPE, TWI, and WExpo negatively affect INC, while logLSF and the presence of sabana positively affect INC. On the other hand, the presence of sabana and LST positively influence the probability of not observing INC ($Y=0$), whereas WE, TWI, and WExpo negatively influence this probability.
+
+```{r}
+#| hide: true
+#| message: false
+#| warning: false
+#| output: false
+
+invisible(tabla_coef<- summary(modZIPfinal))
+
+tabla_coef1 = tabla_coef %>% round(4) %>% as.data.frame() %>%
+  rownames_to_column("Covariate")
+tabla_coef1$Covariate = row.names(tabla_coef)
+
+```
+
+```{r}
+#| label: tbl-ZIPmodels
+#| tbl-cap: "Parameter estimates of the fitted models."
+tabla_coef1 %>% add_row(Covariate ="Mu", .before = 1) %>% 
+  add_row(Covariate ="Sigma", .before = 12) %>% flextable() %>% 
+  theme_booktabs() %>%
+  hline(i = c(1,11,12), border = officer::fp_border(color = "black", width = 2))
+
+
+```
+
+```{r}
+hmodZIPfinal <-predictAll(modZIPfinal)
+hmodZIPfinal_val <-predictAll(modZIPfinal,newdata = datos_validation)
+
+training_final <- datos_training %>% mutate(ZIPmu = hmodZIPfinal$mu,
+                                            ZIPsigma = hmodZIPfinal$sigma)
+
+valid_final <- datos_validation %>% mutate(ZIPmu = hmodZIPfinal_val$mu,
+                                           ZIPsigma = hmodZIPfinal_val$sigma)
+
+datos_final <- rbind(training_final,valid_final)
+
+datos_final <- datos_final %>% dplyr::select(id, ZIPmu, ZIPsigma) %>%
+  mutate(ZIPsigma_dummy = as.factor(ifelse(ZIPsigma>0.5,0,1)),
+         ZIPmu_1 = ifelse(ZIPsigma>0.5,NA,ZIPmu))
+
+datos_st_final <- datos_st %>% left_join(datos_final, by= "id")
+
+datos_map <- st_transform(datos_st_final, 'EPSG:3857')
+
+ZIP_mu_map <- datos_map %>% ggplot() + geom_sf(mapping = aes(col=ZIPmu))+
+  coord_sf(crs=st_crs(3857))  + scale_colour_distiller(direction = 1) +
+  labs(color = "Fire count mean") +
+  TEMA
+
+ZIP_sigma_map <- datos_map %>% ggplot() + geom_sf(mapping = aes(col=ZIPsigma))+
+  coord_sf(crs=st_crs(3857))  + scale_colour_distiller(direction = 1) +
+    labs(color = "Probability of no fire") + TEMA
+
+
+INC_map <- datos_map %>% ggplot() + geom_sf(mapping = aes(col=INC))+
+  coord_sf(crs=st_crs(3857))  + scale_colour_distiller(direction = 1) +
+  labs(color = "INC") +
+  TEMA
+
+ZIP_mu_1_map <- datos_map %>% ggplot() + geom_sf(mapping = aes(col=ZIPmu_1))+
+  coord_sf(crs=st_crs(3857))  + scale_colour_distiller(direction = 1) +
+  labs(color = "Fire count mean") +
+  TEMA
+
+
+# ZIP_sigma1_map <- datos_map %>% ggplot() + geom_sf(mapping = aes(col=ZIPsigma_dummy))+
+#   coord_sf(crs=st_crs(3857)) +scale_colour_manual(values = c("green", "red"),
+#                                                   labels= c("no incendio", "incendio")) +
+#   labs(color = "prob") + TEMA
+
+
+```
+
+Finally, @fig-ZIPmusigma presents the fitted $\mu$ and $\sigma$, which represent INC mean of each location and the probability of no INC, respectively. Those figures are difficult to assess due to the fact that @fig-ZIPmu shows higher fitted INC mean for northern parts of the region. However, if we take into account that the model fits a location with $\sigma>0.5$, meaning this location has greater probability to not observe INC ($Y=0$), we can filter out those locations, and only consider those location with $\sigma<0.5$, that is, those places will have more than 50% of chance to have more than zero INCs, then plot the fitted $\mu$ (@fig-ZIPmu_sigma). We can observe that the places with higher INC count mean are similar to the observed INC (fig-INC).
+
+Finally, @fig-ZIPmusigma presents the fitted $\mu$ and $\sigma$, which represent the mean INC count for each location and the probability of no INC, respectively. These figures can be challenging to interpret, as @fig-ZIPmu shows a higher fitted INC mean in the northern parts of the region, which have high probability to not observe INC. However, if we consider that the model fits a location with $\sigma>0.5$, indicating a greater probability of no INC, we can filter out those locations and focus only on those with $\sigma<0.5$. This means that these locations have more than a 50% chance of experiencing at least one INC. We can then plot the fitted $\mu$ (@fig-ZIPmu_sigma). Notably, the areas with higher mean INC counts are similar to the observed INC (@fig-INC).
+
+::: {#fig-ZIPmusigma layout-ncol="2"}
+```{r}
+#| fig-cap: "ZIP mean."
+#| label: fig-ZIPmu
+#| fig-width: 3
+#| fig-height: 3
+
+ZIP_mu_map
+```
+
+```{r}
+#| fig-cap: "ZIP sigma."
+#| label: fig-ZIPsigma
+#| fig-width: 3
+#| fig-height: 3
+
+ZIP_sigma_map
+ 
+```
+
+The predicted $\mu$ and $\sigma$ of the fitted ZIP model.
+:::
+
+::: {#fig-INCZIPmu layout-ncol="2"}
+```{r}
+#| fig-cap: "Wildfire counts."
+#| label: fig-INC
+#| fig-width: 3
+#| fig-height: 3
+
+INC_map
+```
+
+```{r}
+#| fig-cap: "Predicted fire count mean, conditional on a probability greater than 0.5 of fire."
+#| label: fig-ZIPmu_sigma
+#| fig-width: 3
+#| fig-height: 3
+
+ZIP_mu_1_map
+ 
+```
+
+Observed wildfire counts and the model predicted fire count mean, conditional on a probability greater than 0.5 of occurrence of wildfire.
+:::
+
+# Conclusiones {#sec-conclus}
+
+texto...
+
+# Referencias
+
+::: {#refs}
+:::
